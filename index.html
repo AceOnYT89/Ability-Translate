@@ -107,6 +107,16 @@ h1 span{-webkit-text-fill-color:transparent}
 .hr{display:flex;gap:8px;margin-bottom:8px}
 .hr .hi{margin:0;flex:1;min-width:0}
 .hx{flex:none}
+.vc{margin-top:26px}.vcb{padding:18px}
+.vcb h2{margin:0 0 6px;font-size:16px}
+.vp{color:var(--muted);font-size:14px;margin:0 0 14px;line-height:1.5}
+.drop{border:2px dashed var(--line);border-radius:14px;padding:26px 12px;text-align:center;color:var(--muted);cursor:pointer;transition:.2s;margin-bottom:12px;overflow-wrap:anywhere}
+.drop:hover,.drop.on{border-color:var(--red);color:var(--text);background:rgba(229,9,20,.08)}
+.vi{width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:12px;font:inherit;font-size:16px;outline:none;margin-bottom:10px}
+.vi:focus{border-color:var(--red)}
+.vl{display:flex;gap:10px;align-items:flex-start;font-size:14px;color:var(--muted);margin-bottom:12px;line-height:1.4}
+input[type=checkbox]{-webkit-appearance:checkbox;appearance:auto;width:18px;height:18px;flex:none;accent-color:#e50914;margin:1px 0 0}
+.vr{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.vr .ib{min-height:42px}#vst{font-size:13px;color:var(--muted)}
 #autob{min-height:44px}
 </style>
 </head>
@@ -156,6 +166,16 @@ h1 span{-webkit-text-fill-color:transparent}
   <div class="ins" id="ins"></div>
 </div>
 
+<div class="card vc" id="vc" hidden>
+<div class="vcb">
+<h2>Voice clone</h2>
+<p class="vp">Drop in a recording of the voice (a minute or more of clear speech works best) and Listen will read your translations in that voice. This uses your own Fish Audio account and API key.</p>
+<div class="drop" id="drop" tabindex="0"><span id="dn">Drop an MP3 here or tap to choose</span><input type="file" id="vf" accept="audio/*" hidden></div>
+<input class="vi" id="vk" type="password" placeholder="Your Fish Audio API key" autocomplete="off">
+<label class="vl"><input type="checkbox" id="vok"><span>This is my own voice, or I have permission to clone it</span></label>
+<div class="vr"><button class="ib" id="vmake" type="button">Create voice</button><button class="ib" id="vdel" type="button" hidden>Remove voice</button><span id="vst"></span></div>
+</div>
+</div>
 <div class="hist" id="histw" hidden><div class="hh"><h2>Recent</h2><button class="ib" id="clrh" type="button">Clear all</button></div><div id="hist"></div></div>
 
 <div class="feat">
@@ -201,7 +221,79 @@ const pickers=[src,tgt].map(sel=>{
 });
 function closeAll(){pickers.forEach(p=>p.pk.classList.remove("open"))}
 document.addEventListener("click",closeAll);
-function speak(t,l){try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang=l;speechSynthesis.speak(u)}catch(e){err("Speech isn’t supported in this browser.")}}
+const API="https://api.fish.audio";
+let vfile=null,vid=null,vaud=null;
+const ls={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}},del:k=>{try{localStorage.removeItem(k)}catch(e){}}};
+vid=ls.get("abt_vid");$("vk").value=ls.get("abt_vkey")||"";
+function vst(t,bad){const e=$("vst");e.textContent=t;e.style.color=bad?"var(--red2)":"var(--muted)"}
+function vui(){$("vdel").hidden=!vid;$("vmake").textContent=vid?"Replace voice":"Create voice";if(vid)vst("Your cloned voice is active. Listen will use it.")}
+const apiErr=async r=>{const j=await r.json().catch(()=>({}));return (typeof j.message==="string"&&j.message)||(r.status===402?"Out of Fish Audio credit":"Error "+r.status)};
+const dz=$("drop");
+dz.onclick=()=>$("vf").click();
+$("vf").onchange=e=>{vfile=e.target.files[0]||null;if(vfile)$("dn").textContent=vfile.name};
+["dragover","dragenter"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add("on")}));
+["dragleave","drop"].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove("on")}));
+dz.addEventListener("drop",e=>{const f=e.dataTransfer.files[0];if(f){vfile=f;$("dn").textContent=f.name}});
+$("vmake").onclick=async()=>{
+ const key=$("vk").value.trim();
+ if(!vfile)return vst("Choose an MP3 first.",1);
+ if(!key)return vst("Enter your Fish Audio API key.",1);
+ if(!$("vok").checked)return vst("Please confirm you have permission to use this voice.",1);
+ if(vfile.size>10*1024*1024)return vst("That file is too large (10 MB max).",1);
+ vst("Cloning the voice…");$("vmake").disabled=true;
+ try{
+  const fd=new FormData();fd.append("type","tts");fd.append("train_mode","fast");fd.append("title","Ability Translate voice");fd.append("visibility","private");fd.append("voices",vfile,vfile.name);
+  const r=await fetch(API+"/model",{method:"POST",headers:{"Authorization":"Bearer "+key},body:fd});
+  if(!r.ok)throw new Error(await apiErr(r));
+  const j=await r.json();
+  const old=vid,oldKey=ls.get("abt_vkey");
+  if(old&&oldKey)fetch(API+"/model/"+old,{method:"DELETE",headers:{"Authorization":"Bearer "+oldKey}}).catch(()=>{});
+  vid=j._id;ls.set("abt_vid",vid);ls.set("abt_vkey",key);vui();
+ }catch(e){vst("Couldn’t create the voice: "+(e.message||"network error"),1)}finally{$("vmake").disabled=false}
+};
+$("vdel").onclick=async()=>{
+ const key=ls.get("abt_vkey");
+ try{if(vid&&key)await fetch(API+"/model/"+vid,{method:"DELETE",headers:{"Authorization":"Bearer "+key}})}catch(e){}
+ vid=null;ls.del("abt_vid");ls.del("abt_vkey");$("vk").value="";vui();vst("Voice removed.");
+};
+async function cloneSpeak(t){
+ const key=ls.get("abt_vkey");
+ if(vaud){vaud.pause();vaud=null;if(speak.cur===t){speak.cur=null;return true}}
+ speak.cur=t;
+ try{
+  let r;
+  for(const m of ["s2.1-pro","s2.1-pro-free"]){
+   r=await fetch(API+"/v1/tts",{method:"POST",headers:{"Authorization":"Bearer "+key,"Content-Type":"application/json","model":m},body:JSON.stringify({text:t.slice(0,2500),reference_id:vid,format:"mp3",latency:"normal"})});
+   if(r.ok||r.status!==402)break;
+  }
+  if(!r.ok)throw new Error(await apiErr(r));
+  vaud=new Audio(URL.createObjectURL(await r.blob()));vaud.onended=()=>{vaud=null;speak.cur=null};
+  await vaud.play();return true;
+ }catch(e){speak.cur=null;vaud=null;err("The cloned voice couldn’t play, so the device voice was used. "+(e.message||""));return false}
+}
+let voices=[];
+function loadVoices(){try{voices=speechSynthesis.getVoices()||[]}catch(e){}}
+try{loadVoices();speechSynthesis.addEventListener("voiceschanged",loadVoices)}catch(e){}
+function bestVoice(l){
+ if(!l||!voices.length)return null;
+ const full=l.toLowerCase().replace("_","-"),base=full.split("-")[0],norm=v=>v.lang.toLowerCase().replace("_","-");
+ const c=voices.filter(v=>norm(v)===full||norm(v).split("-")[0]===base);
+ if(!c.length)return null;
+ const score=v=>{const n=v.name.toLowerCase();let s=0;if(/natural|neural|online/.test(n))s+=50;if(/premium|enhanced|siri/.test(n))s+=40;if(/google/.test(n))s+=25;if(/compact|espeak/.test(n))s-=30;if(norm(v)===full)s+=10;if(!v.localService)s+=5;return s};
+ return c.sort((a,b)=>score(b)-score(a))[0]}
+function speak(t,l){
+ if(vid&&ls.get("abt_vkey")){cloneSpeak(t).then(ok=>{if(!ok)speakDevice(t,l)});return}
+ speakDevice(t,l)}
+function speakDevice(t,l){
+ try{
+  const ss=speechSynthesis;
+  if(ss.speaking&&speak.cur===t){ss.cancel();speak.cur=null;return}
+  ss.cancel();speak.cur=t;
+  const v=bestVoice(l),parts=[];let cur="";
+  for(const p of (t.match(/[^.!?。！？]+[.!?。！？]*\s*/g)||[t])){if(cur&&(cur+p).length>180){parts.push(cur);cur=""}cur+=p}
+  if(cur.trim())parts.push(cur);
+  parts.forEach((p,i)=>{const u=new SpeechSynthesisUtterance(p);if(l)u.lang=v?v.lang:l;if(v)u.voice=v;u.rate=.95;u.pitch=1;if(i===parts.length-1)u.onend=()=>{speak.cur=null};ss.speak(u)})
+ }catch(e){err("Speech isn’t supported in this browser.")}}
 $("lis1").onclick=()=>inp.value&&speak(inp.value,src.value==="auto"?"":src.value);
 $("lis2").onclick=()=>last&&speak(last,tgt.value);
 $("mic").onclick=()=>{const R=window.SpeechRecognition||window.webkitSpeechRecognition;if(!R){err("Dictation isn’t supported in this browser.");return}
@@ -267,7 +359,7 @@ async function run(auto){
 }
 inp.addEventListener("blur",()=>{const t=inp.value.trim();if(t&&last)addHist(t,last)});
 inp.addEventListener("input",()=>{clearTimeout(tm);if(autoOn)tm=setTimeout(()=>run(true),700)});
-setTimeout(()=>{if(typeof claude==="undefined"){$("tone").style.display="none";$("insb").style.display="none";document.querySelector(".foot").style.display="none"}},1200);
+setTimeout(()=>{if(typeof claude==="undefined"){$("tone").style.display="none";$("insb").style.display="none";document.querySelector(".foot").style.display="none"}else{$("vc").hidden=false;vui()}},1200);
 
 
 $("insb").onclick=async()=>{
