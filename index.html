@@ -359,7 +359,7 @@ async function run(auto){
 }
 inp.addEventListener("blur",()=>{const t=inp.value.trim();if(t&&last)addHist(t,last)});
 inp.addEventListener("input",()=>{clearTimeout(tm);if(autoOn)tm=setTimeout(()=>run(true),700)});
-setTimeout(()=>{if(typeof claude==="undefined"){$("tone").style.display="none";$("insb").style.display="none";document.querySelector(".foot").style.display="none"}else{$("vc").hidden=false;vui()}},1200);
+setTimeout(()=>{if(typeof claude==="undefined"){$("tone").style.display="none";$("insb").style.display="none";document.querySelector(".foot").style.display="none";$("vc").hidden=false;vui()}},1200);
 
 
 $("insb").onclick=async()=>{
