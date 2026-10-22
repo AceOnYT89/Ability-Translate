@@ -300,26 +300,51 @@ $("mic").onclick=()=>{const R=window.SpeechRecognition||window.webkitSpeechRecog
  try{const r=new R();r.lang=src.value==="auto"?navigator.language:src.value;r.onresult=e=>{inp.value+=(inp.value?" ":"")+e.results[0][0].transcript;inp.dispatchEvent(new Event("input"))};r.onerror=()=>err("Couldn’t access the microphone.");r.start()}catch(e){err("Dictation isn’t available here.")}};
 
 async function getSample(){try{const s=await claude.use("sample");return s}catch(e){return null}}
-let seq=0,claudeOK=false,autoOn=true,tm;
+let seq=0,claudeOK=false,autoOn=true,tm,lastKey="";
 const dec=s=>{const t=document.createElement("textarea");t.innerHTML=s;return t.value};
-const mm=c=>({fil:"tl","la-ecc":"la"}[c]||c);
+const mm=c=>({fil:"tl","la-ecc":"la",no:"nb"}[c]||c);
 function chunks(text,max){const enc=new TextEncoder(),len=s=>enc.encode(s).length;const parts=text.match(/[^.!?。！？]+[.!?。！？]*\s*/g)||[text];const out=[];let cur="";
  const push=()=>{if(cur.trim())out.push(cur);cur=""};
  for(let p of parts){while(len(p)>max){let n=p.length;while(len(p.slice(0,n))>max)n=Math.floor(n*.8);push();out.push(p.slice(0,n));p=p.slice(n)}
   if(len(cur+p)>max)push();cur+=p}
  push();return out}
+const tcache=new Map();
+const sleep=(ms,sig)=>new Promise((res,rej)=>{const t=setTimeout(res,ms);if(sig)sig.addEventListener("abort",()=>{clearTimeout(t);rej(new DOMException("Aborted","AbortError"))})});
+async function mmFetch(c,lp,signal){
+ const ck=lp+"\u0001"+c;if(tcache.has(ck))return tcache.get(ck);
+ let lastErr;
+ for(let a=0;a<3;a++){
+  try{
+   const r=await fetch("https://api.mymemory.translated.net/get?q="+encodeURIComponent(c)+"&langpair="+encodeURIComponent(lp),{signal});
+   if(r.status===429||r.status>=500){lastErr=new Error("busy");await sleep(700*(a+1),signal);continue}
+   if(!r.ok)throw Object.assign(new Error("http "+r.status),{code:"free"});
+   const j=await r.json();
+   const st=String(j.responseStatus),d=String(j.responseDetails||(j.responseData&&j.responseData.translatedText)||"");
+   if(st==="200"){const t=dec(j.responseData.translatedText);tcache.set(ck,t);return t}
+   if(/distinct|same language/i.test(d))return c;
+   if(/all available|used all/i.test(d))throw Object.assign(new Error(d),{code:"quota"});
+   if(/invalid|not supported|unsupported/i.test(d))throw Object.assign(new Error(d),{code:"lang"});
+   if(st==="429"){lastErr=new Error("busy");await sleep(700*(a+1),signal);continue}
+   throw Object.assign(new Error(d||"fail"),{code:"free"});
+  }catch(e){
+   if(e&&(e.name==="AbortError"||e.code))throw e;
+   lastErr=e;if(a<2)await sleep(500*(a+1),signal);
+  }
+ }
+ throw lastErr||new Error("net");
+}
 async function freeTranslate(text,from,to,signal,onPart){
+ if(from===to)return text;
  const lp=(from==="auto"?"Autodetect":mm(from))+"|"+mm(to);const res=[];
  for(const line of text.split("\n")){
   if(!line.trim()){res.push("");continue}
   const parts=[];
   for(const c of chunks(line,450)){
-   const r=await fetch("https://api.mymemory.translated.net/get?q="+encodeURIComponent(c)+"&langpair="+encodeURIComponent(lp),{signal});
-   if(!r.ok)throw new Error("net");
-   const j=await r.json();
-   if(String(j.responseStatus)!=="200")throw Object.assign(new Error(j.responseDetails||"fail"),{code:"free"});
-   parts.push(dec(j.responseData.translatedText));
-   onPart(res.concat([parts.join(" ")]).join("\n"));
+   let t=await mmFetch(c,lp,signal);
+   if(from==="auto"&&to!=="en"&&t.trim().toLowerCase()===c.trim().toLowerCase()&&/[A-Za-z]{3}/.test(c)){
+    try{const t2=await mmFetch(c,"en|"+mm(to),signal);if(t2.trim().toLowerCase()!==c.trim().toLowerCase())t=t2}catch(e){if(e&&e.name==="AbortError")throw e}
+   }
+   parts.push(t);onPart(res.concat([parts.join(" ")]).join("\n"));
   }
   res.push(parts.join(" "));
  }
@@ -329,6 +354,8 @@ async function run(auto){
   const text=inp.value.trim();
   if(!text){last="";setOut("Translation",true);return}
   err("");ins.classList.remove("show");
+  const key=text+"\u0001"+src.value+"\u0001"+tgt.value;
+  if(auto&&key===lastKey&&last)return;
   const inClaude=typeof claude!=="undefined";
   const s=inClaude?await getSample():null;
   if(inClaude&&!s){err("Translation is unavailable right now.");return}
@@ -346,19 +373,21 @@ async function run(auto){
       res=await freeTranslate(text,src.value,tgt.value,ctrl.signal,t=>{if(my===seq)setOut(t,false)});
     }
     if(my!==seq)return;
-    last=(res||"").trim();setOut(last||"No translation returned.",!last);
+    last=(res||"").trim();setOut(last||"No translation returned.",!last);if(last)lastKey=key;
     if(last&&!auto)addHist(text,last)
   }catch(e){
     if(my!==seq||(e&&e.name==="AbortError"))return;
     if(e&&e.code==="not_granted")err("Permission was declined. Click Translate again and allow it to continue.");
     else if(e&&e.code==="rate_limited")err("Too many requests. Please wait a moment and try again.");
-    else if(e&&e.code==="free")err(/all available|used all/i.test(e.message)?"The free daily translation limit has been reached. Try again tomorrow.":"The translation service couldn’t translate this. Try a different language pair.");
-    else err("Couldn’t reach the translation service. Check your connection and try again.");
+    else if(e&&e.code==="quota")err("The free daily translation limit has been reached. Try again tomorrow.");
+    else if(e&&e.code==="lang")err("The free service doesn’t support this language pair. Try a different language.");
+    else if(e&&e.code==="free")err("The translation service couldn’t translate this. Edit the text to try again.");
+    else err("Couldn’t reach the translation service. Check your connection, then edit the text to try again.");
     if(!last)setOut("Translation",true);
   }
 }
 inp.addEventListener("blur",()=>{const t=inp.value.trim();if(t&&last)addHist(t,last)});
-inp.addEventListener("input",()=>{clearTimeout(tm);if(autoOn)tm=setTimeout(()=>run(true),700)});
+inp.addEventListener("input",()=>{clearTimeout(tm);if(autoOn)tm=setTimeout(()=>run(true),900)});
 setTimeout(()=>{if(typeof claude==="undefined"){$("tone").style.display="none";$("insb").style.display="none";document.querySelector(".foot").style.display="none";$("vc").hidden=false;vui()}},1200);
 
 
