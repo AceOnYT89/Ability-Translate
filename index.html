@@ -107,6 +107,7 @@ h1 span{-webkit-text-fill-color:transparent}
 .hr{display:flex;gap:8px;margin-bottom:8px}
 .hr .hi{margin:0;flex:1;min-width:0}
 .hx{flex:none}
+.vs{width:auto;max-width:150px;min-height:40px;background:var(--surface2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:7px 8px;font:inherit;font-size:13px}
 .vc{margin-top:26px}.vcb{padding:18px}
 .vcb h2{margin:0 0 6px;font-size:16px}
 .vp{color:var(--muted);font-size:14px;margin:0 0 14px;line-height:1.5}
@@ -149,6 +150,8 @@ input[type=checkbox]{-webkit-appearance:checkbox;appearance:auto;width:18px;heig
       <div class="tools">
         <button class="ib" id="lis2" title="Listen" disabled>Listen</button>
         <button class="ib" id="cp" title="Copy" disabled>Copy</button>
+        <select class="vs" id="vsel" aria-label="Voice" style="display:none"></select>
+        <select class="vs" id="vspd" aria-label="Speed"><option value="0.8">Slower</option><option value="0.95" selected>Normal</option><option value="1.1">Faster</option></select>
         <button class="ib" id="insb" disabled>Insights</button>
       </div>
     </div>
@@ -201,7 +204,7 @@ inp.addEventListener("input",()=>{$("cnt").textContent=inp.value.length+" / 5000
 inp.addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){e.preventDefault();run()}});
 $("tone").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;tone=b.dataset.t;[...$("tone").children].forEach(x=>x.classList.toggle("on",x===b))});
 $("clr").onclick=()=>{inp.value="";$("cnt").textContent="0 / 5000";setOut("Translation",true);ins.classList.remove("show");err("");inp.focus()};
-function fade(fn){const els=()=>[inp,out,...pickers.map(p=>p.btn)];els().forEach(e=>e.classList.add("fading"));setTimeout(()=>{fn();pickers.forEach(p=>p.sync());els().forEach(e=>e.classList.remove("fading"))},220)}
+function fade(fn){const els=()=>[inp,out,...pickers.map(p=>p.btn)];els().forEach(e=>e.classList.add("fading"));setTimeout(()=>{fn();pickers.forEach(p=>p.sync());fillVoices();els().forEach(e=>e.classList.remove("fading"))},220)}
 $("swap").onclick=()=>fade(()=>{const t=last||"";const s=src.value==="auto"?"en":src.value;src.value=tgt.value;tgt.value=s;if(t){inp.value=t;$("cnt").textContent=t.length+" / 5000";last="";setOut("Translation",true)}if(autoOn&&inp.value.trim())setTimeout(()=>run(true),60)});
 [src,tgt].forEach(s=>s.addEventListener("change",()=>{const again=()=>{if(autoOn&&inp.value.trim())run(true)};if(last){out.classList.add("fading");setTimeout(()=>{last="";setOut("Translation",true);ins.classList.remove("show");out.classList.remove("fading");again()},220)}else again()}));
 $("cp").onclick=async()=>{try{await navigator.clipboard.writeText(last);$("cp").textContent="Copied";setTimeout(()=>$("cp").textContent="Copy",1200)}catch(e){err("Copy was blocked by the browser.")}};
@@ -273,14 +276,38 @@ async function cloneSpeak(t){
 }
 let voices=[];
 function loadVoices(){try{voices=speechSynthesis.getVoices()||[]}catch(e){}}
-try{loadVoices();speechSynthesis.addEventListener("voiceschanged",loadVoices)}catch(e){}
-function bestVoice(l){
- if(!l||!voices.length)return null;
- const full=l.toLowerCase().replace("_","-"),base=full.split("-")[0],norm=v=>v.lang.toLowerCase().replace("_","-");
- const c=voices.filter(v=>norm(v)===full||norm(v).split("-")[0]===base);
- if(!c.length)return null;
- const score=v=>{const n=v.name.toLowerCase();let s=0;if(/natural|neural|online/.test(n))s+=50;if(/premium|enhanced|siri/.test(n))s+=40;if(/google/.test(n))s+=25;if(/compact|espeak/.test(n))s-=30;if(norm(v)===full)s+=10;if(!v.localService)s+=5;return s};
- return c.sort((a,b)=>score(b)-score(a))[0]}
+try{loadVoices();speechSynthesis.addEventListener("voiceschanged",()=>{loadVoices();fillVoices()})}catch(e){}
+const NOVELTY=/bad news|bahh|bells|boing|bubbles|cellos|deranged|good news|hysterical|pipe organ|trinoids|whisper|zarvox|albert|jester|wobble|superstar|organ|fred|junior|kathy|ralph|grandma|grandpa|rocko|shelley|flo|eddy|reed|sandy/i;
+function voiceList(l){
+ if(!l||!voices.length)return [];
+ const full=l.toLowerCase().replace("_","-"),base=full.split("-")[0];
+ const ok=[base].concat(({no:["nb","nn"],he:["iw"],fil:["tl"],id:["in"]})[base]||[]);
+ const norm=v=>v.lang.toLowerCase().replace("_","-");
+ const score=v=>{const n=v.name.toLowerCase();let s=0;
+  if(/natural|neural|online/.test(n))s+=60;
+  if(/premium|enhanced|siri/.test(n))s+=50;
+  if(/google|samsung/.test(n))s+=25;
+  if(/compact|espeak/.test(n))s-=40;
+  if(NOVELTY.test(n))s-=100;
+  if(norm(v)===full)s+=10;
+  if(!v.localService)s+=5;
+  return s};
+ return voices.filter(v=>norm(v)===full||ok.includes(norm(v).split("-")[0])).sort((a,b)=>score(b)-score(a))}
+function savedVoices(){try{return JSON.parse(ls.get("abt_voice")||"{}")||{}}catch(e){return {}}}
+function bestVoice(l){const c=voiceList(l);if(!c.length)return null;const sv=savedVoices()[l];return c.find(v=>v.voiceURI===sv)||c[0]}
+function fillVoices(){
+ const sel=$("vsel"),l=tgt.value,c=voiceList(l);
+ sel.innerHTML="";
+ const a=document.createElement("option");a.value="";a.textContent="Best voice (auto)";sel.appendChild(a);
+ c.forEach(v=>{const o=document.createElement("option");o.value=v.voiceURI;o.textContent=v.name.slice(0,40);sel.appendChild(o)});
+ const sv=savedVoices()[l];sel.value=c.some(v=>v.voiceURI===sv)?sv:"";
+ sel.style.display=c.length>1?"":"none";
+}
+$("vsel").onchange=()=>{const sv=savedVoices();if($("vsel").value)sv[tgt.value]=$("vsel").value;else delete sv[tgt.value];ls.set("abt_voice",JSON.stringify(sv))};
+$("vspd").value=ls.get("abt_spd")||"0.95";
+$("vspd").onchange=()=>ls.set("abt_spd",$("vspd").value);
+tgt.addEventListener("change",fillVoices);
+fillVoices();
 function speak(t,l){
  if(vid&&ls.get("abt_vkey")){cloneSpeak(t).then(ok=>{if(!ok)speakDevice(t,l)});return}
  speakDevice(t,l)}
@@ -289,10 +316,10 @@ function speakDevice(t,l){
   const ss=speechSynthesis;
   if(ss.speaking&&speak.cur===t){ss.cancel();speak.cur=null;return}
   ss.cancel();speak.cur=t;
-  const v=bestVoice(l),parts=[];let cur="";
+  loadVoices();const v=bestVoice(l),parts=[];let cur="";
   for(const p of (t.match(/[^.!?。！？]+[.!?。！？]*\s*/g)||[t])){if(cur&&(cur+p).length>180){parts.push(cur);cur=""}cur+=p}
   if(cur.trim())parts.push(cur);
-  parts.forEach((p,i)=>{const u=new SpeechSynthesisUtterance(p);if(l)u.lang=v?v.lang:l;if(v)u.voice=v;u.rate=.95;u.pitch=1;if(i===parts.length-1)u.onend=()=>{speak.cur=null};ss.speak(u)})
+  parts.forEach((p,i)=>{const u=new SpeechSynthesisUtterance(p);if(l)u.lang=v?v.lang:l;if(v)u.voice=v;u.rate=parseFloat($("vspd").value)||.95;u.pitch=1;if(i===parts.length-1)u.onend=()=>{speak.cur=null};ss.speak(u)})
  }catch(e){err("Speech isn’t supported in this browser.")}}
 $("lis1").onclick=()=>inp.value&&speak(inp.value,src.value==="auto"?"":src.value);
 $("lis2").onclick=()=>last&&speak(last,tgt.value);
@@ -407,7 +434,7 @@ $("insb").onclick=async()=>{
 function addHist(a,b){hist=[{a,b,s:src.value,t:tgt.value},...hist.filter(h=>h.a!==a)].slice(0,8);try{localStorage.setItem("abt_hist",JSON.stringify(hist))}catch(e){}drawHist()}
 function saveHist(){try{localStorage.setItem("abt_hist",JSON.stringify(hist))}catch(e){}}
 $("clrh").onclick=()=>{hist=[];saveHist();drawHist()};
-function drawHist(){const w=$("histw");w.hidden=!hist.length;const h=$("hist");h.innerHTML="";hist.forEach(x=>{const b=document.createElement("button");b.className="hi";b.textContent=x.a.slice(0,80);const sm=document.createElement("small");sm.textContent=x.b.slice(0,80)+" · "+name(x.t);b.appendChild(sm);b.onclick=()=>{inp.value=x.a;src.value=x.s;tgt.value=x.t;pickers.forEach(p=>p.sync());last=x.b;setOut(x.b,false);$("cnt").textContent=x.a.length+" / 5000";window.scrollTo({top:0,behavior:"smooth"})};const row=document.createElement("div");row.className="hr";const del=document.createElement("button");del.className="ib hx";del.type="button";del.textContent="Delete";del.setAttribute("aria-label","Delete this translation");del.onclick=()=>{hist=hist.filter(y=>y!==x);saveHist();drawHist()};row.appendChild(b);row.appendChild(del);h.appendChild(row)})}
+function drawHist(){const w=$("histw");w.hidden=!hist.length;const h=$("hist");h.innerHTML="";hist.forEach(x=>{const b=document.createElement("button");b.className="hi";b.textContent=x.a.slice(0,80);const sm=document.createElement("small");sm.textContent=x.b.slice(0,80)+" · "+name(x.t);b.appendChild(sm);b.onclick=()=>{inp.value=x.a;src.value=x.s;tgt.value=x.t;pickers.forEach(p=>p.sync());fillVoices();last=x.b;setOut(x.b,false);$("cnt").textContent=x.a.length+" / 5000";window.scrollTo({top:0,behavior:"smooth"})};const row=document.createElement("div");row.className="hr";const del=document.createElement("button");del.className="ib hx";del.type="button";del.textContent="Delete";del.setAttribute("aria-label","Delete this translation");del.onclick=()=>{hist=hist.filter(y=>y!==x);saveHist();drawHist()};row.appendChild(b);row.appendChild(del);h.appendChild(row)})}
 try{hist=JSON.parse(localStorage.getItem("abt_hist")||"[]")||[]}catch(e){hist=[]}
 drawHist();
 </script>
