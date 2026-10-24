@@ -198,7 +198,7 @@ src.value="auto";tgt.value="es";
 let tone="natural",ctrl=null,last="",hist=[];
 const name=c=>(LANGS.find(l=>l[0]===c)||[0,"the detected language"])[1];
 function setOut(t,empty){out.textContent=t;out.classList.toggle("empty",!!empty);const has=!empty&&t;$("lis2").disabled=$("cp").disabled=$("insb").disabled=!has}
-function err(t){msg.textContent=t;msg.hidden=!t}
+function err(t,retry){msg.textContent=t;msg.hidden=!t;if(t&&retry){const b=document.createElement("button");b.className="ib";b.type="button";b.style.marginLeft="8px";b.textContent="Try again";b.onclick=()=>{lastKey="";run(false)};msg.appendChild(b)}}
 inp.addEventListener("input",()=>{$("cnt").textContent=inp.value.length+" / 5000"});
 inp.addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){e.preventDefault();run()}});
 $("tone").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;tone=b.dataset.t;[...$("tone").children].forEach(x=>x.classList.toggle("on",x===b));if(autoOn&&inp.value.trim())run(true)});
@@ -359,18 +359,52 @@ async function mmFetch(c,lp,signal){
  }
  throw lastErr||new Error("net");
 }
-async function freeTranslate(text,from,to,signal,onPart){
- if(from===to)return text;
- const lp=(from==="auto"?"Autodetect":mm(from))+"|"+mm(to);const res=[];
- for(const line of text.split("\n")){
-  if(!line.trim()){res.push("");continue}
-  const parts=[];
-  for(const c of chunks(line,450)){
+const gg=c=>c==="auto"?"auto":({"la-ecc":"la",he:"iw"}[c]||c);
+const down={};
+async function ggFetch(c,from,to,signal){
+ const ck="g|"+from+"|"+to+"\u0001"+c;if(tcache.has(ck))return tcache.get(ck);
+ let lastErr;
+ for(let a=0;a<2;a++){
+  try{
+   const r=await fetch("https://translate.googleapis.com/translate_a/single?client=gtx&sl="+encodeURIComponent(gg(from))+"&tl="+encodeURIComponent(gg(to))+"&dt=t&q="+encodeURIComponent(c),{signal});
+   if(r.status===400)throw Object.assign(new Error("lang"),{code:"lang"});
+   if(!r.ok){lastErr=new Error("http "+r.status);await sleep(600*(a+1),signal);continue}
+   const j=await r.json();const t=(j[0]||[]).map(x=>(x&&x[0])||"").join("");
+   if(!t)throw new Error("empty");
+   tcache.set(ck,t);return t;
+  }catch(e){if(e&&(e.name==="AbortError"||e.code==="lang"))throw e;lastErr=e;if(a<1)await sleep(500,signal)}
+ }
+ throw lastErr||new Error("net");
+}
+async function translateChunk(c,from,to,signal){
+ let order=["mm","gg"].filter(e=>!(down[e]>Date.now()));if(!order.length)order=["mm","gg"];
+ let lastErr;
+ for(const eng of order){
+  try{
+   if(eng==="gg")return await ggFetch(c,from,to,signal);
+   const lp=(from==="auto"?"Autodetect":mm(from))+"|"+mm(to);
    let t=await mmFetch(c,lp,signal);
    if(from==="auto"&&to!=="en"&&t.trim().toLowerCase()===c.trim().toLowerCase()&&/[A-Za-z]{3}/.test(c)){
     try{const t2=await mmFetch(c,"en|"+mm(to),signal);if(t2.trim().toLowerCase()!==c.trim().toLowerCase())t=t2}catch(e){if(e&&e.name==="AbortError")throw e}
    }
-   parts.push(t);onPart(res.concat([parts.join(" ")]).join("\n"));
+   return t;
+  }catch(e){
+   if(e&&e.name==="AbortError")throw e;
+   lastErr=e;
+   if(e&&e.code==="quota")down[eng]=Date.now()+36e5;else if(!(e&&e.code==="lang"))down[eng]=Date.now()+6e4;
+  }
+ }
+ throw lastErr||new Error("net");
+}
+async function freeTranslate(text,from,to,signal,onPart){
+ if(from===to)return text;
+ const res=[];
+ for(const line of text.split("\n")){
+  if(!line.trim()){res.push("");continue}
+  const parts=[];
+  for(const c of chunks(line,450)){
+   parts.push(await translateChunk(c,from,to,signal));
+   onPart(res.concat([parts.join(" ")]).join("\n"));
   }
   res.push(parts.join(" "));
  }
@@ -392,7 +426,8 @@ async function run(auto){
   const s=inClaude?await getSample():null;
   if(inClaude&&!s){err("Translation is unavailable right now.");return}
   const aiKey=!s?ls.get("abt_akey"):null;
-  if(ctrl)ctrl.abort();ctrl=new AbortController();const my=++seq;
+  if(!s&&!aiKey&&navigator.onLine===false){err("You’re offline. Connect to the internet to translate.",true);return}
+  if(ctrl)ctrl.abort();const myCtrl=ctrl=new AbortController();const my=++seq;let timedOut=false;const tmo=setTimeout(()=>{timedOut=true;myCtrl.abort()},30000);
   if(!last)setOut("…",true);
   try{
     let res;
@@ -405,10 +440,13 @@ async function run(auto){
     }else{
       res=await freeTranslate(text,src.value,tgt.value,ctrl.signal,t=>{if(my===seq)setOut(t,false)});
     }
+    clearTimeout(tmo);
     if(my!==seq)return;
     last=(res||"").trim();setOut(last||"No translation returned.",!last);if(last)lastKey=key;
     if(last&&!auto)addHist(text,last)
   }catch(e){
+    clearTimeout(tmo);
+    if(e&&e.name==="AbortError"&&timedOut&&my===seq){err("Translation took too long.",true);if(!last)setOut("Translation",true);return}
     if(my!==seq||(e&&e.name==="AbortError"))return;
     if(e&&e.code==="not_granted")err("Permission was declined. Click Translate again and allow it to continue.");
     else if(e&&e.code==="rate_limited")err("Too many requests. Please wait a moment and try again.");
@@ -416,8 +454,8 @@ async function run(auto){
     else if(e&&e.code==="claude")err("Claude couldn’t translate this: "+e.message);
     else if(e&&e.code==="quota")err("The free daily translation limit has been reached. Try again tomorrow.");
     else if(e&&e.code==="lang")err("The free service doesn’t support this language pair. Try a different language.");
-    else if(e&&e.code==="free")err("The translation service couldn’t translate this. Edit the text to try again.");
-    else err("Couldn’t reach the translation service. Check your connection, then edit the text to try again.");
+    else if(e&&e.code==="free")err("The translation service couldn’t translate this.",true);
+    else err("Couldn’t reach the translation service. Check your connection.",true);
     if(!last)setOut("Translation",true);
   }
 }
@@ -429,6 +467,7 @@ function aiUI(){
  $("vc").hidden=inC;if(!inC)vui();
 }
 aiUI();setTimeout(aiUI,1200);
+window.addEventListener("online",()=>{if(inp.value.trim()&&!last){lastKey="";run(true)}});
 
 
 $("insb").onclick=async()=>{
